@@ -2,7 +2,7 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
-from sklearn.metrics import confusion_matrix
+#from sklearn.metrics import confusion_matrix
 
 # ----------------------------------------------------------------------
 
@@ -26,6 +26,20 @@ def compute_SSE(data, labels):
         sse += np.sum((cluster_points - cluster_center) ** 2)
     return sse
 
+def confusion_matrix(true_labels, predicted_labels):
+    # Extract the unique classes
+    classes = np.unique(np.concatenate((true_labels, predicted_labels)))
+    # Initialize the confusion matrix with zeros
+    conf_matrix = np.zeros((len(classes), len(classes)), dtype=int)
+
+    # Map each class to an index
+    class_index = {cls: idx for idx, cls in enumerate(classes)}
+
+    # Populate the confusion matrix
+    for true, pred in zip(true_labels, predicted_labels):
+        conf_matrix[class_index[true]][class_index[pred]] += 1
+
+    return conf_matrix
 
 def compute_ARI(confusion_matrix: NDArray[np.int32]):
     """
