@@ -304,7 +304,7 @@ def spectral_clustering():
     plot_eig=plt.plot(sorted(value_to_plot_eva))
     plt.plot(sorted(value_to_plot_eva))
     plt.xlabel(f'Eigen Values Sorted in Ascending')
-    plt.ylabel(f'Index')    
+    # plt.ylabel(f'Index')    
     plt.grid(True)
     
 
