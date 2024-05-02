@@ -5,55 +5,110 @@ Do not use global variables!
 
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
+from scipy.spatial.distance import pdist, squareform
 import numpy as np
 from numpy.typing import NDArray
 import pickle
 import matplotlib.backends.backend_pdf as pdf
 
+
 ######################################################################
 #####     CHECK THE PARAMETERS     ########
 ######################################################################
 
-def plot_clustering(data, labels, title):
-    plt.figure(figsize=(8, 6))
-    plt.scatter(data[:, 0], data[:, 1], c=labels, cmap='viridis', s=10)
-    plt.title(title)
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    plt.colorbar(label='Cluster')
-    plt.grid(True)
-    plt.show()
+def create_shared_neighbor_matrix(data, k, t):
+    """Create matrix of shared neighbors based on Jarvis-Patrick criteria."""
+    distance_matrix = squareform(pdist(data, 'euclidean'))
+    neighbors = np.argsort(distance_matrix, axis=1)[:, 1:k+1]
+    n = len(data)
+    adjacency_matrix = np.zeros((n, n), dtype=bool)
 
-def compute_SSE(data, labels):
-  
+    for i in range(n):
+        for j in range(i + 1, n):
+            shared_neighbors = len(set(neighbors[i]).intersection(neighbors[j]))
+            if shared_neighbors >= t:
+                adjacency_matrix[i, j] = True
+                adjacency_matrix[j, i] = True
+    return adjacency_matrix
+
+def calculate_sse(data, labels, cluster_centers, cluster_map):
+    """Calculate Sum of Squared Errors (SSE) for clusters."""
     sse = 0.0
-    for i in np.unique(labels):
-        cluster_points = data[labels == i]
-        cluster_center = np.mean(cluster_points, axis=0)
-        sse += np.sum((cluster_points - cluster_center) ** 2)
+    for k, center_index in cluster_map.items():
+        if k >= 0:  
+            cluster_data = data[labels == k]  
+            center = cluster_centers[center_index]  
+            distances = np.linalg.norm(cluster_data - center, axis=1)  
+            squared_distances = distances**2  
+            sse += np.sum(squared_distances)  
     return sse
 
-def adjusted_rand_index(true_labels, pred_labels):
- 
-    contingency_matrix = np.zeros((np.max(true_labels) + 1, np.max(pred_labels) + 1), dtype=np.int64)
-    for i in range(len(true_labels)):
-        contingency_matrix[true_labels[i], pred_labels[i]] += 1
+def adjusted_rand_index(labels_true, labels_pred):
+    # Find the unique classes and clusters
+    classes = np.unique(labels_true)
+    clusters = np.unique(labels_pred)
 
-    a = np.sum(contingency_matrix, axis=1)
-    b = np.sum(contingency_matrix, axis=0)
-    n = np.sum(contingency_matrix)
-    ab_sum = np.sum(a * (a - 1)) / 2
-    cd_sum = np.sum(b * (b - 1)) / 2
-    a_plus_b_choose_2 = np.sum(a * (a - 1)) / 2
-    c_plus_d_choose_2 = np.sum(b * (b - 1)) / 2
+    # Create the contingency table
+    contingency_table = np.zeros((classes.size, clusters.size), dtype=int)
+    for class_idx, class_label in enumerate(classes):
+        for cluster_idx, cluster_label in enumerate(clusters):
+            contingency_table[class_idx, cluster_idx] = np.sum((labels_true == class_label) & (labels_pred == cluster_label))
 
-    ad_bc = np.sum(contingency_matrix * (contingency_matrix - 1)) / 2
+    # Compute the sum over the rows and columns
+    sum_over_rows = np.sum(contingency_table, axis=1)
+    sum_over_cols = np.sum(contingency_table, axis=0)
 
-    expected_index = a_plus_b_choose_2 * c_plus_d_choose_2 / n / (n - 1) + ad_bc ** 2 / n / (n - 1)
-    max_index = (a_plus_b_choose_2 + c_plus_d_choose_2) / 2
-    return (ad_bc - expected_index) / (max_index - expected_index)
+    # Compute the number of combinations of two
+    n_combinations = sum([n_ij * (n_ij - 1) / 2 for n_ij in contingency_table.flatten()])
+    sum_over_rows_comb = sum([n_ij * (n_ij - 1) / 2 for n_ij in sum_over_rows])
+    sum_over_cols_comb = sum([n_ij * (n_ij - 1) / 2 for n_ij in sum_over_cols])
 
+    # Compute terms for the adjusted Rand index
+    n = labels_true.size
+    total_combinations = n * (n - 1) / 2
+    expected_index = sum_over_rows_comb * sum_over_cols_comb / total_combinations
+    max_index = (sum_over_rows_comb + sum_over_cols_comb) / 2
+    denominator = (max_index - expected_index)
+    # Handle the special case when the denominator is 0
+    if denominator == 0:
+        return 1 if n_combinations == expected_index else 0
+    ari = (n_combinations - expected_index) / denominator
+    return ari
 
+def dbscan_custom(matrix, data, minPts):
+    """Custom implementation of DBSCAN using shared neighbor matrix."""
+    n = matrix.shape[0]
+    pred_labels = -np.ones(n)
+    cluster_id = 0
+    cluster_centers = []
+    cluster_map = {}
+
+    for i in range(n):
+        if pred_labels[i] != -1:
+            continue
+        neighbors = np.where(matrix[i])[0]
+        if len(neighbors) < minPts:
+            continue  
+        seed_set = set(neighbors)
+        cluster_points = [data[i]]
+
+        while seed_set:
+            current_point = seed_set.pop()
+            if pred_labels[current_point] == -2:
+                pred_labels[current_point] = cluster_id
+            if pred_labels[current_point] != -1:
+                continue
+            pred_labels[current_point] = cluster_id
+            current_neighbors = np.where(matrix[current_point])[0]
+            if len(current_neighbors) >= minPts:
+                seed_set.update(current_neighbors)
+
+        cluster_center = np.mean(cluster_points, axis=0)
+        cluster_centers.append(cluster_center)
+        cluster_map[cluster_id] = len(cluster_centers) - 1
+        cluster_id += 1
+
+    return pred_labels, np.array(cluster_centers), cluster_map
 
 def jarvis_patrick(
     data: NDArray[np.floating], labels: NDArray[np.int32], params_dict: dict
@@ -81,61 +136,16 @@ def jarvis_patrick(
     - In this project, only consider unidirectional nearest neighboars for simplicity.
     - The metric  used to compute the the k-nearest neighberhood of all points is the Euclidean metric
     """
-    k = params_dict['k']  # Number of neighbors to consider
-    s_min = params_dict['s_min']   # Similarity threshold
+    adjacency_matrix = create_shared_neighbor_matrix(data, k=params_dict['k'],t=2)
     
-    n = len(data)
-    computed_labels = np.zeros(n, dtype=np.int32)
-
-    for i in range(n):
-        # Compute distances from the current data point to all other points
-        distances = cdist([data[i]], data, metric='euclidean')[0]
-
-        # Sort distances and get the indices of k nearest neighbors
-        nearest_indices = np.argsort(distances)[1:k+1]  # Exclude the current point itself
-
-        # Count labels of nearest neighbors
-        label_counts = np.bincount(labels[nearest_indices])
-
-        # Get the label with the highest count
-        majority_label = np.argmax(label_counts)
-
-        # Compute similarity between the current point and its nearest neighbor
-        similarity = label_counts[majority_label] / k
-
-        # Assign cluster label if similarity meets the threshold
-        if similarity >= s_min:
-            computed_labels[i] = majority_label + 1  # Add 1 to avoid 0 as a label
-
-  
-    # Calculate ARI
-    ARI = adjusted_rand_index(labels,computed_labels)
-
-    # Calculate SSE manually
-    SSE = compute_SSE(data,computed_labels)
-
+    computed_labels, cluster_centers, cluster_map = dbscan_custom(adjacency_matrix, data, minPts=params_dict['smin'])
+    
+    SSE = calculate_sse(data, computed_labels, cluster_centers, cluster_map)
+    
+    ARI = adjusted_rand_index(labels, computed_labels)
+    
     return computed_labels, SSE, ARI
 
-def hyperparameter_study(data, labels, k_range, s_min_range, num_trials):
-    best_ARI = -1
-    best_k = None
-    best_s_min = None
-
-    for k in k_range:
-        for s_min in s_min_range:
-            total_ARI = 0
-            for _ in range(num_trials):
-                params_dict = {'k': k, 's_min': s_min}
-                computed_labels, ARI, _ = jarvis_patrick(data, labels, params_dict)
-                total_ARI += ARI
-
-            avg_ARI = total_ARI / num_trials
-            if avg_ARI > best_ARI:
-                best_ARI = avg_ARI
-                best_k = k
-                best_s_min = s_min
-
-    return best_k, best_s_min
 
 def jarvis_patrick_clustering():
     """
@@ -145,150 +155,158 @@ def jarvis_patrick_clustering():
         answers (dict): A dictionary containing the clustering results.
     """
 
+    
     answers = {}
+    data=np.load("question1_cluster_data.npy")
+    true_labels=np.load("question1_cluster_labels.npy")
 
-    # Return your `jarvis_patrick` function
     answers["jarvis_patrick_function"] = jarvis_patrick
 
     # Work with the first 10,000 data points: data[0:10000]
-    # Do a parameter study of this data using Jarvis-Patrick.
+    # Do a parameter study of this data using Spectral clustering.
     # Minimmum of 10 pairs of parameters ('sigma' and 'xi').
-    
-    cluster_data = np.load('question1_cluster_data.npy')
-    cluster_labels = np.load('question1_cluster_labels.npy')
 
-    random_indices = np.random.choice(len(cluster_data), size=5000, replace=False)
-    data_subset = cluster_data[random_indices]
-    labels_subset = cluster_labels[random_indices]
-    
-    data_subset = data_subset[:1000]
-    labels_subset = labels_subset[:1000]
-    
-    # Perform hyperparameter study
-    k_range = [3,4,5,6,7,8]
-    s_min_range = [0.4, 0.5, 0.6, 0.7, 0.8,0.9,1.0]
-
-    num_trials = 10
-
-    best_k, best_s_min = hyperparameter_study(data_subset, labels_subset, k_range, s_min_range, num_trials)
-    
-    params_dict = {'k': best_k, 's_min': best_s_min}
-    
+    # Create a dictionary for each parameter pair ('sigma' and 'xi').
     groups = {}
-    plots_values={}
-    # Apply best hyperparameters on five slices of data
-    for i in [0,1,2,3,4]:
-        data_slice = cluster_data[i * 1000: (i + 1) * 1000]
-        labels_slice = cluster_labels[i * 1000: (i + 1) * 1000]
-        # Apply best hyperparameters on the slice of data
-        computed_labels, sse,ari = jarvis_patrick(data_slice, labels_slice, params_dict)
-        groups[i] = {"smin": best_s_min,"k":best_k, "ARI": ari, "SSE": sse}
-        plots_values[i] = {"computed_labels": computed_labels, "ARI": ari, "SSE": sse}
-        
-    highest_ari = -1
-    best_dataset_index = None
-    for i, group_info in plots_values.items():
-        if group_info['ARI'] > highest_ari:
-            highest_ari = group_info['ARI']
-            best_dataset_index = i
-            
-    pdf_pages = pdf.PdfPages("jarvis_patrick_clustering_plots.pdf")
+
+    sse=[]
+    ari=[]
+    predictions=[]
+    final=[]
+    ks=[3,4,5,6,7,8]
+    smins=[4,5,6,7,8,9,10]
+    for counter,i in enumerate(ks):
+      for alp,s_val in enumerate(smins):
+        datav=data[:1000]
+        true_labelsv=true_labels[:1000]
+        params_dict={'k':i,'smin':s_val}
+        preds,sse_hyp,ari_hyp=jarvis_patrick(datav,true_labelsv,params_dict)
+        final.append([sse_hyp,ari_hyp,i,s_val])
+        sse.append(sse_hyp)
+        ari.append(ari_hyp)
+        predictions.append(preds)
+      if counter not in groups:
+        pass
+      else:
+        pass
+    sse_numpy=np.array(sse)
+    ari_numpy=np.array(ari)
+    # For the spectral method, perform your calculations with 5 clusters.
+    # In this cas,e there is only a single parameter, σ.
+
+    max_val=0
+    hig_k=0
+    hig_smin=0
+    for i in final:
+      if i[1]>max_val:
+        max_val=i[1]
+        hig_k=i[2]
+        hig_smin=i[3]
+
+
+    alpha=final
+    my_array=np.array(alpha)
+    k_plot=np.array(my_array[:,2],dtype='int')
+    smins_plot=np.array(my_array[:,3],dtype='int')
+    ari_plot=np.array(my_array[:,1])
+    sse_plot=np.array(my_array[:,0])
     
-    
+    pdf_pages = pdf.PdfPages("jarvis_patrick_plots.pdf")
+
     plt.figure(figsize=(8, 6))
-    plot_ARI = plt.scatter(cluster_data[best_dataset_index * 1000: (best_dataset_index + 1) * 1000, 0], 
-                cluster_data[best_dataset_index * 1000: (best_dataset_index + 1) * 1000, 1], 
-                c=plots_values[best_dataset_index]["computed_labels"], cmap='viridis')
-    plt.title(f'Clustering for Dataset {best_dataset_index} (Highest ARI) with k value :{best_k} and s_min: {best_s_min}')
+    plt.scatter(x=k_plot,y=smins_plot,c=ari_plot)
+    plt.xlabel('K')
+    plt.ylabel('S_min')
+    plt.title('k vs S_min colored by ARI')
     plt.suptitle('Jarvis - Patrick Clustering')
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    plt.colorbar(label='Cluster')
+    plt.colorbar()
+    plt.grid(True)
+    pdf_pages.savefig()  
+    plt.close()
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(x=k_plot,y=smins_plot,c=sse_plot)
+    plt.xlabel('K')
+    plt.ylabel('S_min')
+    plt.title('k vs S_min colored by SSE')
+    plt.suptitle('Jarvis - Patrick Clustering')
+    plt.colorbar()
+    plt.grid(True)
+    pdf_pages.savefig()  
+    plt.close()
+
+    sse_final=[]
+    preds_final=[]
+    ari_final=[]
+    eigen_final=[]
+    for i in range(5):
+      datav=data[i*1000:(i+1)*1000]
+      true_labelsv=true_labels[i*1000:(i+1)*1000]
+      params_dict={'k':hig_k,'smin':hig_smin}
+      preds,sse_hyp,ari_hyp=jarvis_patrick(datav,true_labelsv,params_dict)
+      sse_final.append(sse_hyp)
+      ari_final.append(ari_hyp)
+      preds_final.append(preds)
+      if i not in groups:
+        groups[i]={'k':hig_k,'ARI':ari_hyp,"SSE":sse_hyp,'smin':hig_smin}
+        pass
+      else:
+        pass
+
+    sse_numpy=np.array(sse_final)
+    ari_numpy=np.array(ari_final)
+
+    answers["cluster parameters"] = groups
+    answers["1st group, SSE"] = groups[0]['SSE']
+
+    least_sse_index=np.argmin(sse_numpy)
+    highest_ari_index=np.argmax(ari_numpy)
+    lowest_ari_index=np.argmin(ari_numpy)
+
+    plt.figure(figsize=(8, 6))
+    plot_ARI=plt.scatter(data[1000*highest_ari_index:(highest_ari_index+1)*1000, 0], data[1000*highest_ari_index:(highest_ari_index+1)*1000, 1], c=preds_final[highest_ari_index], cmap='viridis', marker='.')
+    plt.title(f'Clustering for Dataset {i+1} (Highest ARI)')
+    plt.suptitle('Jarvis - Patrick Clustering')
+    plt.xlabel(f'Feature 1')
+    plt.ylabel(f'Feature 2')
+    plt.colorbar()
+    plt.grid(True)
+    pdf_pages.savefig() 
+    plt.close()
+
+    plt.figure(figsize=(8, 6))
+    plot_SSE=plt.scatter(data[1000*least_sse_index:(least_sse_index+1)*1000, 0], data[1000*least_sse_index:(least_sse_index+1)*1000, 1], c=preds_final[least_sse_index], cmap='viridis', marker='.')
+    plt.title(f'Clustering for Dataset {i+1} (Lowest SSE)')
+    plt.suptitle('Jarvis - Patrick Clustering')
+    plt.xlabel(f'Feature 1')
+    plt.ylabel(f'Feature 2')
+    plt.colorbar()
     plt.grid(True)
     pdf_pages.savefig() 
     plt.close()
     
-    lowest_sse = float('inf')
-    best_dataset_index_sse = None
-    for i, group_info in plots_values.items():
-        if group_info['SSE'] < lowest_sse:
-            lowest_sse = group_info['SSE']
-            best_dataset_index_sse = i
-            
-    plt.figure(figsize=(8, 6))
-    plot_SSE = plt.scatter(cluster_data[best_dataset_index_sse * 1000: (best_dataset_index_sse + 1) * 1000, 0], 
-                cluster_data[best_dataset_index_sse * 1000: (best_dataset_index_sse + 1) * 1000, 1], 
-                c=plots_values[best_dataset_index_sse]["computed_labels"], cmap='viridis')
-    plt.title(f'Clustering for Dataset {best_dataset_index_sse} (Lowest SSE) with k value :{best_k} and s_min: {best_s_min}')
-    plt.suptitle('Jarvis - Patrick Clustering')
-    plt.xlabel('Feature 1')
-    plt.ylabel('Feature 2')
-    plt.colorbar(label='Cluster')
-    plt.grid(True)
-    pdf_pages.savefig()  
-    plt.close()
-    
     pdf_pages.close()
-    
-    # Create a dictionary for each parameter pair ('sigma' and 'xi').
- 
 
-    # data for data group 0: data[0:10000]. For example,
-    # groups[0] = {"sigma": 0.1, "xi": 0.1, "ARI": 0.1, "SSE": 0.1}
-
-    # data for data group i: data[10000*i: 10000*(i+1)], i=1, 2, 3, 4.
-    # For example,
-    # groups[i] = {"sigma": 0.1, "xi": 0.1, "ARI": 0.1, "SSE": 0.1}
-
-    # groups is the dictionary above
-    answers["cluster parameters"] = groups
-    answers["1st group, SSE"] = groups[0]["SSE"] #{}
-    
-
-    # Create two scatter plots using `matplotlib.pyplot`` where the two
-    # axes are the parameters used, with # \sigma on the horizontal axis
-    # and \xi and the vertical axis. Color the points according to the SSE value
-    # for the 1st plot and according to ARI in the second plot.
-
-    # Choose the cluster with the largest value for ARI and plot it as a 2D scatter plot.
-    # Do the same for the cluster with the smallest value of SSE.
-    # All plots must have x and y labels, a title, and the grid overlay.
-
-    # Plot is the return value of a call to plt.scatter()
-    #plot_ARI = plt.scatter([1,2,3], [4,5,6])
-    #plot_SSE = plt.scatter([1,2,3], [4,5,6])
     answers["cluster scatterplot with largest ARI"] = plot_ARI
     answers["cluster scatterplot with smallest SSE"] = plot_SSE
 
-    # Pick the parameters that give the largest value of ARI, and apply these
-    # parameters to datasets 1, 2, 3, and 4. Compute the ARI for each dataset.
-    # Calculate mean and standard deviation of ARI for all five datasets.
+    ARI_sum=[]
+    SSE_sum=[]
+    for i in groups:
+      if 'ARI' in groups[i]:
+        ARI_sum.append(groups[i]['ARI'])
+        SSE_sum.append(groups[i]['SSE'])
 
-    ari_values = [group_info["ARI"] for group_info in groups.values()]
-    mean_ari = np.mean(ari_values)
-    std_dev_ari = np.std(ari_values)
-    
-    # A single float
-    answers["mean_ARIs"] = mean_ari
-
-    # A single float
-    answers["std_ARIs"] = std_dev_ari
-    
-    sse_values = [group_info["SSE"] for group_info in groups.values()]
-    mean_sse = np.mean(sse_values)
-    std_dev_sse = np.std(sse_values)
-
-    # A single float
-    answers["mean_SSEs"] = mean_sse
-
-    # A single float
-    answers["std_SSEs"] = std_dev_sse
+    answers["mean_ARIs"] = float(np.mean(ari_numpy))
+    answers["std_ARIs"] = float(np.std(ari_numpy))
+    answers["mean_SSEs"] = float(np.mean(sse_numpy))
+    answers["std_SSEs"] = float(np.std(sse_numpy))
 
     return answers
-
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     all_answers = jarvis_patrick_clustering()
     with open("jarvis_patrick_clustering.pkl", "wb") as fd:
         pickle.dump(all_answers, fd, protocol=pickle.HIGHEST_PROTOCOL)
+
