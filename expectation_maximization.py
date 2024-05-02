@@ -2,7 +2,6 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
-#from sklearn.metrics import confusion_matrix
 
 # ----------------------------------------------------------------------
 
@@ -366,6 +365,7 @@ def gaussian_mixture():
     assert max_iter == log_likelihoods.shape[0]
     plot_likelihood = plt.plot(list(range(max_iter)), log_likelihoods)
     plt.title("Log Likelihood vs. Iteration")
+    plt.suptitle('Expectation - Maximization Plots')
     plt.xlabel("Iteration")
     plt.ylabel("Log Likelihood")
     plt.grid(True)
